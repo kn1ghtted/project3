@@ -28,7 +28,7 @@ public class Server implements IServer{
 
 	public static ConcurrentLinkedDeque<Cloud.FrontEndOps.Request> requestQueue;
 	private static VMInfo vmInfo;
-	private static int MID_FRONT_RATIO = 5;
+	private static int MID_FRONT_RATIO = 6;
 	private static List<Integer> logArray;
 	private static long initTimeStamp;
 	private static long lastAdjustTime;
