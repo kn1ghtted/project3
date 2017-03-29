@@ -19,8 +19,9 @@ public class Server implements IServer{
 	private static final float LOG_PERIOD_LENGTH = 2000;
 	private static final long ADJUST_COOLDOWN = 1000;
 	private static final int FRONTTIER_THRESHOLD = 1;
-	private static final double QUEUELENGTH_MIDDLETIER_RATIO = 2;
-	private static final int MIDLETIER_SHUT_THRESHOLD = 2;
+	private static final double QUEUELENGTH_MIDDLETIER_RATIO = 2.4;
+	private static final int MIDLETIER_SHUT_THRESHOLD = 1;
+	private static int MID_FRONT_RATIO = 6;
 	private static ServerLib SL;
 	// a concurrent the map each VM ID to its tier
 	private static ConcurrentMap<Integer, Integer> frontTierMap;
@@ -28,7 +29,6 @@ public class Server implements IServer{
 
 	public static ConcurrentLinkedDeque<Cloud.FrontEndOps.Request> requestQueue;
 	private static VMInfo vmInfo;
-	private static int MID_FRONT_RATIO = 6;
 	private static List<Integer> logArray;
 	private static long initTimeStamp;
 	private static long lastAdjustTime;
@@ -182,10 +182,14 @@ public class Server implements IServer{
 						for (Integer i : middleTierMap.keySet()) {
 							String url = String.format("//%s:%d/%s", ip, port, MIDDLETIER_STRING + Integer.toString(i));
 							System.err.println("Closing url = " + url);
+							System.err.println("This macineg is : " + SL.getStatusVM(i));
 							try {
 								idShutDown = i;
-								IServer instance = (IServer) Naming.lookup(url);
-								instance.shutDown();
+								if (SL.getStatusVM(i) == Cloud.CloudOps.VMStatus.Running){
+									IServer instance = (IServer) Naming.lookup(url);
+									instance.shutDown();
+									middleTierMap.remove(idShutDown);
+								}
 							} catch (NotBoundException e) {
 								e.printStackTrace();
 							} catch (MalformedURLException e) {
@@ -195,7 +199,6 @@ public class Server implements IServer{
 							}
 							break;
 						}
-						middleTierMap.remove(idShutDown);
 					}
 				}
 			}
