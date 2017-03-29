@@ -19,7 +19,7 @@ public class Server implements IServer{
 	private static final float LOG_PERIOD_LENGTH = 2000;
 	private static final long ADJUST_COOLDOWN = 1000;
 	private static final int FRONTTIER_THRESHOLD = 1;
-	private static final int QUEUELENGTH_MIDDLETIER_RATIO = 2;
+	private static final double QUEUELENGTH_MIDDLETIER_RATIO = 2;
 	private static final int MIDLETIER_SHUT_THRESHOLD = 2;
 	private static ServerLib SL;
 	// a concurrent the map each VM ID to its tier
@@ -90,7 +90,9 @@ public class Server implements IServer{
 			Cloud.FrontEndOps.Request r;
 			if (vmInfo.getType() == MASTER){
 				r = SL.getNextRequest();
-				if (SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Running){
+				if ((SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Running) ||
+						(System.currentTimeMillis() - initTimeStamp >= 6000)){
+						// >= 6000 to prevent the shut down of vm 2
 					// what happens if RMI is called inside its own class TODO??
 					requestQueue.push(r);
 					logPush();
@@ -129,7 +131,14 @@ public class Server implements IServer{
 		if (logArray.size() < 2){
 			return false;
 		}
-		int deltaRequest = logArray.get(logArray.size() - 1) - logArray.get(logArray.size() - 2);
+		int deltaRequest;
+		if (logArray.size() >= 4) {
+			deltaRequest = ((logArray.get(logArray.size() - 1) + logArray.get(logArray.size() - 2)) -
+					(logArray.get(logArray.size() - 3) + logArray.get(logArray.size() - 4)))/2;
+		}
+		else{
+			deltaRequest = logArray.get(logArray.size() - 1) - logArray.get(logArray.size() - 2);
+		}
 		boolean adjusted = false;
 		if ((System.currentTimeMillis() - lastAdjustTime) > ADJUST_COOLDOWN){
 			adjusted = true;
@@ -138,9 +147,10 @@ public class Server implements IServer{
 				int previousSize = middleTierMap.size();
 				int targetSize = previousSize + deltaRequest;
 				System.err.println("requestQueue.size() = " + requestQueue.size());
-				System.err.println("requestQueue.size() /ratio = " + requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO);
-				if (targetSize > requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO){
-					targetSize =  requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO;
+				int surpressedNum = (int)((double)requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO);
+				System.err.println("requestQueue.size() /ratio = " + surpressedNum);
+				if (targetSize > surpressedNum){
+					targetSize =  surpressedNum;
 				}
 				System.err.println("previousSize, targetSize = " + previousSize + " , " + targetSize);
 				for (int i = previousSize; i < targetSize; i++)
