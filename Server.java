@@ -1,4 +1,3 @@
-/* Sample code for basic Server */
 
 import java.net.MalformedURLException;
 import java.rmi.*;
@@ -21,6 +20,7 @@ public class Server implements IServer{
 	private static final long ADJUST_COOLDOWN = 1000;
 	private static final int FRONTTIER_THRESHOLD = 1;
 	private static final int QUEUELENGTH_MIDDLETIER_RATIO = 2;
+	private static final int MIDLETIER_SHUT_THRESHOLD = 2;
 	private static ServerLib SL;
 	// a concurrent the map each VM ID to its tier
 	private static ConcurrentMap<Integer, Integer> frontTierMap;
@@ -97,7 +97,7 @@ public class Server implements IServer{
 				}else{
 					SL.processRequest(r);
 				}
-				if (adjustVMs(SL)){
+				if (adjustVMs(SL, ip, port)){
 					lastAdjustTime = System.currentTimeMillis();
 					System.err.println("FrontTierSize = " + frontTierMap.size());
 					System.err.println("MiddleTierSize = " + middleTierMap.size());
@@ -124,19 +124,21 @@ public class Server implements IServer{
 		}
 	}
 
-	private static boolean adjustVMs(ServerLib SL) {
-		System.err.println("in adjustVm");
+	private static boolean adjustVMs(ServerLib SL, String ip, int port) {
+		System.err.println("in adjustVm, logArray = " + logArray);
 		if (logArray.size() < 2){
 			return false;
 		}
 		int deltaRequest = logArray.get(logArray.size() - 1) - logArray.get(logArray.size() - 2);
 		boolean adjusted = false;
-		if ((System.currentTimeMillis() - lastAdjustTime) > ADJUST_COOLDOWN && (deltaRequest != 0)){
+		if ((System.currentTimeMillis() - lastAdjustTime) > ADJUST_COOLDOWN){
 			adjusted = true;
 			if ((deltaRequest > 0)){
 				// add middle tier
 				int previousSize = middleTierMap.size();
 				int targetSize = previousSize + deltaRequest;
+				System.err.println("requestQueue.size() = " + requestQueue.size());
+				System.err.println("requestQueue.size() /ratio = " + requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO);
 				if (targetSize > requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO){
 					targetSize =  requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO;
 				}
@@ -152,14 +154,42 @@ public class Server implements IServer{
 				if (targetFrontTierSize < FRONTTIER_THRESHOLD){
 					targetFrontTierSize = FRONTTIER_THRESHOLD;
 				}
-				for (int i = 0; i < targetFrontTierSize; i++)
+				int size = frontTierMap.size();
+				for (int i = size; i < targetFrontTierSize; i++)
 				{
 					int targetID = frontTierMap.size() + middleTierMap.size() + 2;
 					myStartVM(SL, targetID, FRONT);
 				}
 			}else{
-
+				System.err.println("Checking consecutive 1s: " + logArray);
+				if ((logArray.get(logArray.size() - 1) == logArray.get(logArray.size() - 2)) && (logArray.get(logArray.size() - 2) == 1)) {
+					System.err.println("Consecutive ones!");
+					// shutdown mid tier
+					adjusted = true;
+					System.err.println("middleTierMap = " + middleTierMap);
+					while (middleTierMap.size() > MIDLETIER_SHUT_THRESHOLD) {
+						Integer idShutDown = 0;
+						for (Integer i : middleTierMap.keySet()) {
+							String url = String.format("//%s:%d/%s", ip, port, MIDDLETIER_STRING + Integer.toString(i));
+							System.err.println("Closing url = " + url);
+							try {
+								idShutDown = i;
+								IServer instance = (IServer) Naming.lookup(url);
+								instance.shutDown();
+							} catch (NotBoundException e) {
+								e.printStackTrace();
+							} catch (MalformedURLException e) {
+								e.printStackTrace();
+							} catch (RemoteException e) {
+								e.printStackTrace();
+							}
+							break;
+						}
+						middleTierMap.remove(idShutDown);
+					}
+				}
 			}
+
 		}
 
 		return adjusted;
