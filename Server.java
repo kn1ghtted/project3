@@ -131,14 +131,7 @@ public class Server implements IServer{
 		if (logArray.size() < 2){
 			return false;
 		}
-		int deltaRequest;
-		if (logArray.size() >= 4) {
-			deltaRequest = ((logArray.get(logArray.size() - 1) + logArray.get(logArray.size() - 2)) -
-					(logArray.get(logArray.size() - 3) + logArray.get(logArray.size() - 4)))/2;
-		}
-		else{
-			deltaRequest = logArray.get(logArray.size() - 1) - logArray.get(logArray.size() - 2);
-		}
+		int deltaRequest = getDeltaRequest();
 		boolean adjusted = false;
 		if ((System.currentTimeMillis() - lastAdjustTime) > ADJUST_COOLDOWN){
 			adjusted = true;
@@ -265,6 +258,17 @@ public class Server implements IServer{
 		long time = System.currentTimeMillis();
 		long logPeriod = (long)((double)(time - initTimeStamp) / (double) LOG_PERIOD_LENGTH);
 		return logPeriod;
+	}
+
+	public static int getDeltaRequest() {
+//		if (logArray.size() >= 4) {
+//			return ((logArray.get(logArray.size() - 1) + logArray.get(logArray.size() - 2)) -
+//					(logArray.get(logArray.size() - 3) + logArray.get(logArray.size() - 4)))/2;
+//		}
+//		else{
+//			return logArray.get(logArray.size() - 1) - logArray.get(logArray.size() - 2);
+//		}
+		return requestQueue.size() - middleTierMap.size();
 	}
 
 
