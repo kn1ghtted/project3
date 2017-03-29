@@ -8,11 +8,13 @@ public class VMInfo {
     private ServerLib SL;
     private final int type;
     public Date date;
+    public int vmID;
 
-    public VMInfo(int master, ServerLib SL, Date date) {
+    public VMInfo(int master, ServerLib SL, Date date, int vmID) {
         type = master;
         this.SL = SL;
         this.date = date;
+        this.vmID = vmID;
     }
 
     public int getType() {

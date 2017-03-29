@@ -13,4 +13,6 @@ public interface IServer extends Remote{
     Cloud.FrontEndOps.Request popRequest() throws RemoteException;
 
     int getRequestQueueLength() throws RemoteException;
+    
+    void shutDown() throws RemoteException;
 }
