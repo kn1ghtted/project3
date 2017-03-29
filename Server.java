@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.SynchronousQueue;
 
 public class Server implements IServer{
 	private static final String MASTER_STRING = "Master";
@@ -18,24 +17,22 @@ public class Server implements IServer{
 	private static final int MASTER = 0;
 	private static final String FRONTTIER_STRING = "FrontTier";
 	private static final String MIDDLETIER_STRING = "MiddleTier";
-	private static final float LOG_PERIOD_LENGTH = 3000;
-	private static final long ADJUST_COOLDOWN = 2000;
-	private static final int FRONTTIER_TRHESHOLD = 0;
-	private static final long SERVER_PROCESSING_TIME = 1000;
-	private static int MID_FRONT_RATIO = 3;
-	private static final int MIDLETIER_SHUT_THRESHOLD = 2;
-	private static final double QUEUELENGTH_MID_RATIO = 2;
+	private static final float LOG_PERIOD_LENGTH = 2000;
+	private static final long ADJUST_COOLDOWN = 1000;
+	private static final int FRONTTIER_THRESHOLD = 1;
+	private static final int QUEUELENGTH_MIDDLETIER_RATIO = 2;
+	private static ServerLib SL;
 	// a concurrent the map each VM ID to its tier
 	private static ConcurrentMap<Integer, Integer> frontTierMap;
 	private static ConcurrentMap<Integer, Integer> middleTierMap;
 
 	public static ConcurrentLinkedDeque<Cloud.FrontEndOps.Request> requestQueue;
 	private static VMInfo vmInfo;
+	private static int MID_FRONT_RATIO = 5;
 	private static List<Integer> logArray;
 	private static long initTimeStamp;
 	private static long lastAdjustTime;
 	private int vmID;
-	private ServerLib SL;
 
 	public Server(ServerLib SL, int vmID) {
 		this.vmID = vmID;
@@ -52,32 +49,40 @@ public class Server implements IServer{
 		IServer master = null;
 		System.err.println("VM started, ip = " + ip + " port = " + port + " vmID = " + vmID);
 		if (vmID == 1){
+//			int VMNum = getVMNum(currentTime);
+//			for (int i = 0; i < VMNum; i ++){
+//				SL.startVM();
+//			}
 			requestQueue = new ConcurrentLinkedDeque<>();
 			frontTierMap = new ConcurrentHashMap<>();
 			middleTierMap = new ConcurrentHashMap<>();
 			logArray = new ArrayList<>();
-//      vmMap = new ConcurrentHashMap<>();
+//			vmMap = new ConcurrentHashMap<>();
 			registerMaster(SL, ip, port, vmID);
 			myStartVM(SL, 2, MIDDLE);
 			initTimeStamp = System.currentTimeMillis();
 			lastAdjustTime = initTimeStamp;
 		}
 		else{
-			if(SL.getStatusVM(1) == Cloud.CloudOps.VMStatus.Running) {
+			if(SL.getStatusVM(1) == Cloud.CloudOps.VMStatus.Running){
 				master = getMasterInstance(ip, port);
 				// we design first VM started by server to be a mid-tier
-				if (vmID == 2) {
+				if (vmID == 2){
 					registerMidTier(SL, ip, port, vmID);
-				} else {
-					if (master.isFrontTier(vmID)) {
+				}
+				else{
+					if (master.isFrontTier(vmID)){
 						System.err.println("In new FrontTier!");
 						registerFrontTier(SL, ip, port, vmID);
-					} else {
+					}
+					else{
 						System.err.println("In new Mid tier!");
 						registerMidTier(SL, ip, port, vmID);
 					}
 				}
+
 			}
+
 		}
 
 		// main loop
@@ -85,16 +90,14 @@ public class Server implements IServer{
 			Cloud.FrontEndOps.Request r;
 			if (vmInfo.getType() == MASTER){
 				r = SL.getNextRequest();
-				long timeSinceInit = System.currentTimeMillis() - initTimeStamp;
-				//TODO after shutdown, this may not be id 2
-				if (SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Booting){
-					SL.processRequest(r);
-				}else{
+				if (SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Running){
 					// what happens if RMI is called inside its own class TODO??
 					requestQueue.push(r);
 					logPush();
+				}else{
+					SL.processRequest(r);
 				}
-				if (adjustVMs(SL, ip, port)){
+				if (adjustVMs(SL)){
 					lastAdjustTime = System.currentTimeMillis();
 					System.err.println("FrontTierSize = " + frontTierMap.size());
 					System.err.println("MiddleTierSize = " + middleTierMap.size());
@@ -121,90 +124,58 @@ public class Server implements IServer{
 		}
 	}
 
-	private static boolean adjustVMs(ServerLib SL, String ip, int port) {
-		boolean adjusted = false;
-
-		System.err.println("in adjustVM");
+	private static boolean adjustVMs(ServerLib SL) {
+		System.err.println("in adjustVm");
 		if (logArray.size() < 2){
-//			int previousNum = middleTierMap.size();
-//			int targetNum = (int)((double)requestQueue.size()/QUEUELENGTH_MID_RATIO);
-//			for (int i = previousNum; i < targetNum; i++)
-//			{
-//				adjusted = true;
-//				int targetID = frontTierMap.size() + middleTierMap.size() + 1;
-//				myStartVM(SL, targetID, MIDDLE);
-//			}
-			return adjusted;
+			return false;
 		}
-		int queueLength = logArray.get(logArray.size() - 1);
-		int deltaRequest = queueLength - logArray.get(logArray.size() - 2);
-		System.err.println(logArray);
+		int deltaRequest = logArray.get(logArray.size() - 1) - logArray.get(logArray.size() - 2);
+		boolean adjusted = false;
 		if ((System.currentTimeMillis() - lastAdjustTime) > ADJUST_COOLDOWN && (deltaRequest != 0)){
+			adjusted = true;
 			if ((deltaRequest > 0)){
-				adjusted = true;
 				// add middle tier
-				int previousNum = middleTierMap.size();
-				int targetNum = Math.min(previousNum + deltaRequest, (int)((double)requestQueue.size()/QUEUELENGTH_MID_RATIO));
-//        int targetSize = Math.min(deltaRequest + middleTierMap.size(), queueLength / QUEUELENGTH_MID_RATIO);
-				for (int i = previousNum; i < targetNum; i++)
+				int previousSize = middleTierMap.size();
+				int targetSize = previousSize + deltaRequest;
+				if (targetSize > requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO){
+					targetSize =  requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO;
+				}
+				System.err.println("previousSize, targetSize = " + previousSize + " , " + targetSize);
+				for (int i = previousSize; i < targetSize; i++)
 				{
-					System.err.println("!!!Added a mid tier, requestQueue.size() = " + requestQueue.size());
-					System.err.println("previousNum + deltaRequest" + previousNum);
-					int targetID = frontTierMap.size() + middleTierMap.size() + 1;
+					int targetID = frontTierMap.size() + middleTierMap.size() + 2;
 					myStartVM(SL, targetID, MIDDLE);
 				}
 				// add front tier, tar
-				// give frontier a threshold
-				if (frontTierMap.size() < FRONTTIER_TRHESHOLD){
-					for (int i = 0; i < FRONTTIER_TRHESHOLD; i++){
-						int targetID = frontTierMap.size() + middleTierMap.size() + 1;
-						myStartVM(SL, targetID, FRONT);
-					}
+				int targetFrontTierSize = (middleTierMap.size() / MID_FRONT_RATIO) - frontTierMap.size();
+				System.err.println("target frontier size = " + targetFrontTierSize);
+				if (targetFrontTierSize < FRONTTIER_THRESHOLD){
+					targetFrontTierSize = FRONTTIER_THRESHOLD;
 				}
-				else{
-				  int targetFrontTierSize = (middleTierMap.size() / MID_FRONT_RATIO) - frontTierMap.size();
-				  System.err.println("target frontier size = " + targetFrontTierSize);
-				  for (int i = 0; i < targetFrontTierSize; i++)
-				  {
-					int targetID = frontTierMap.size() + middleTierMap.size() + 1;
+				for (int i = 0; i < targetFrontTierSize; i++)
+				{
+					int targetID = frontTierMap.size() + middleTierMap.size() + 2;
 					myStartVM(SL, targetID, FRONT);
-				  }
 				}
+			}else{
 
 			}
 		}
-//    if ((logArray.get(logArray.size() - 1) == logArray.get(logArray.size() - 2)) && (logArray.get(logArray.size() - 2) == 1)){
-//      // shutdown mid tier
-//      adjusted = true;
-//      if (middleTierMap.size() > MIDLETIER_SHUT_THRESHOLD){
-//        for (Integer i : middleTierMap.keySet()){
-//          String url = String.format("//%s:%d/%s", ip, port, MIDDLETIER_STRING + Integer.toString(i));
-//          System.err.println("Closing url = " + url);
-//          try {
-//            IServer instance = (IServer) Naming.lookup(url);
-//            instance.shutDown();
-//          } catch (NotBoundException e) {
-//            e.printStackTrace();
-//          } catch (MalformedURLException e) {
-//            e.printStackTrace();
-//          } catch (RemoteException e) {
-//            e.printStackTrace();
-//          }
-//          break;
-//        }
-//      }
-//
-//    }
 
 		return adjusted;
 	}
 
 	private static void myStartVM(ServerLib SL, int vmID, int type) {
 		if (type == FRONT){
+			System.err.println("Starting fronttier, frontiermap = " + frontTierMap);
 			frontTierMap.put(vmID, vmID);
+			System.err.println("Finished starting fronttier, frontiermap = " + frontTierMap);
+
 		}
 		else{
+			System.err.println("Starting middletier, middletiermap = " + middleTierMap);
 			middleTierMap.put(vmID, vmID);
+			System.err.println("Finished staring middletier, middletiermap = " + middleTierMap);
 		}
 		SL.startVM();
 	}
@@ -269,8 +240,8 @@ public class Server implements IServer{
 		long logPeriod = getLogPeriod();
 		updateLogArray(logPeriod);
 		logArray.set(logArray.size()-1, requestQueue.size());
-//    logArray.set(logArray.size()-1, (logArray.get(logArray.size()-1) + 1));
-//    System.err.println("Logged push, logArray = " + logArray);
+//		logArray.set(logArray.size()-1, (logArray.get(logArray.size()-1) + 1));
+		System.err.println("Logged push, logArray = " + logArray);
 
 	}
 
@@ -298,24 +269,24 @@ public class Server implements IServer{
 		SL.shutDown();
 	}
 
-//  private static int getVMNum(float currentTime){
-//    int VMNum;
-//    if ((currentTime >= 0) && (currentTime <= 7)){
-//      VMNum = 1;
-//    }else if(currentTime <= 12){
-//      VMNum = 2;
-//    }else if (currentTime < 14){
-//      VMNum = 3;
-//    }else if (currentTime <= 18){
-//      VMNum = 2;
-//    }else if (currentTime <= 22){
-//      VMNum = 3;
-//    }
-//    else{
-//      VMNum = 1;
-//    }
-//    return VMNum;
-//  }
+//	private static int getVMNum(float currentTime){
+//		int VMNum;
+//		if ((currentTime >= 0) && (currentTime <= 7)){
+//			VMNum = 1;
+//		}else if(currentTime <= 12){
+//			VMNum = 2;
+//		}else if (currentTime < 14){
+//			VMNum = 3;
+//		}else if (currentTime <= 18){
+//			VMNum = 2;
+//		}else if (currentTime <= 22){
+//			VMNum = 3;
+//		}
+//		else{
+//			VMNum = 1;
+//		}
+//		return VMNum;
+//	}
 
 	public static IServer getMasterInstance(String ip, int port) {
 		return getVMInstance(ip, port, MASTER_STRING);
@@ -341,4 +312,3 @@ public class Server implements IServer{
 
 
 }
-
