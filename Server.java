@@ -28,7 +28,7 @@ public class Server implements IServer{
 
 	public static ConcurrentLinkedDeque<Cloud.FrontEndOps.Request> requestQueue;
 	private static VMInfo vmInfo;
-	private static int MID_FRONT_RATIO = 4;
+	private static int MID_FRONT_RATIO = 2;
 	private static List<Integer> logArray;
 	private static long initTimeStamp;
 	private static long lastAdjustTime;
@@ -152,15 +152,15 @@ public class Server implements IServer{
 						myStartVM(SL, targetID, FRONT);
 					}
 				}
-//        else{
-//          int targetFrontTierSize = (middleTierMap.size() / MID_FRONT_RATIO) - frontTierMap.size();
-//          System.err.println("target frontier size = " + targetFrontTierSize);
-//          for (int i = 0; i < targetFrontTierSize; i++)
-//          {
-//            int targetID = frontTierMap.size() + middleTierMap.size() + 1;
-//            myStartVM(SL, targetID, FRONT);
-//          }
-//        }
+				else{
+				  int targetFrontTierSize = (middleTierMap.size() / MID_FRONT_RATIO) - frontTierMap.size();
+				  System.err.println("target frontier size = " + targetFrontTierSize);
+				  for (int i = 0; i < targetFrontTierSize; i++)
+				  {
+					int targetID = frontTierMap.size() + middleTierMap.size() + 1;
+					myStartVM(SL, targetID, FRONT);
+				  }
+				}
 
 			}
 		}
