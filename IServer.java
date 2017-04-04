@@ -15,4 +15,6 @@ public interface IServer extends Remote{
     int getRequestQueueLength() throws RemoteException;
 
     void shutDown() throws RemoteException;
+
+    boolean removeMidTier(int vmID) throws RemoteException;
 }

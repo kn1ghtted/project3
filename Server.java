@@ -25,7 +25,9 @@ public class Server implements IServer{
 	private static final int FRONTTIER_THRESHOLD = 1;
 	private static final double QUEUELENGTH_MIDDLETIER_RATIO = 2.4;
 	private static final int MIDLETIER_SHUT_THRESHOLD = 2;
-	private static final boolean SHUT_DOWN = true;
+	private static final double DROP_PROB = 0.3;
+	private static final int DROP_THRESHOLD = 10;
+	private static final long IDLE_THRESHOLD = 5000;
 	private static int MID_FRONT_RATIO = 6;
 	// a concurrent the map each VM ID to its tier
 	private static ConcurrentMap<Integer, Integer> frontTierMap;
@@ -38,6 +40,7 @@ public class Server implements IServer{
 	private static ServerLib SL;
 	private static VMInfo vmInfo; // TODO one per main class?
 	private static long lastAdjustTime;
+	private static long lastProcessTIme;
 	private int vmID;
 	private static boolean isShutDown;
 
@@ -72,6 +75,7 @@ public class Server implements IServer{
 			nextVMID = 4;
 			initTimeStamp = System.currentTimeMillis();
 			lastAdjustTime = initTimeStamp;
+
 		}
 		else{
 			System.err.println("in other machine, frontTierMap= " + frontTierMap + " nextVMID = " + nextVMID);
@@ -89,6 +93,8 @@ public class Server implements IServer{
 					else{
 						System.err.println("In new Mid tier!");
 						registerMidTier(SL, ip, port, vmID);
+						lastProcessTIme = System.currentTimeMillis();
+
 					}
 				}
 
@@ -101,44 +107,62 @@ public class Server implements IServer{
 			Cloud.FrontEndOps.Request r;
 			if (vmInfo.getType() == MASTER){
 				r = SL.getNextRequest();
-				if ((SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Running) ||
-						(System.currentTimeMillis() - initTimeStamp >= 6000)){
+				if (!tryDrop(r)){
+					if ((SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Running) ||
+							(System.currentTimeMillis() - initTimeStamp >= 6000)){
 						// >= 6000 to prevent the shut down of vm 2
-					// what happens if RMI is called inside its own class TODO??
-					requestQueue.push(r);
-					logPush();
-				}else{
-					SL.processRequest(r);
+						requestQueue.push(r);
+						logPush();
+					}else{
+						SL.processRequest(r);
+					}
+					if (adjustVMs(SL, ip, port)){
+						lastAdjustTime = System.currentTimeMillis();
+						System.err.println("FrontTierSize = " + frontTierMap.size());
+						System.err.println("MiddleTierSize = " + middleTierMap.size());
+					}
+					updateLogArray(getLogPeriod());
 				}
-				if (adjustVMs(SL, ip, port)){
-					lastAdjustTime = System.currentTimeMillis();
-					System.err.println("FrontTierSize = " + frontTierMap.size());
-					System.err.println("MiddleTierSize = " + middleTierMap.size());
-				}
-				updateLogArray(getLogPeriod());
 			}
 			else{
-				if (isShutDown && (SHUT_DOWN)){
-					System.err.println("Shut down by server, exiting!");
-					System.exit(0);
-				}
 				if(SL.getStatusVM(1) == Cloud.CloudOps.VMStatus.Running){
 					if (vmInfo.getType() == FRONT){
 						r = SL.getNextRequest();
 						master.pushRequest(r);
 					}
 					else{
-						int masterQueueLength = master.getRequestQueueLength();
-						if(masterQueueLength > 0) {
-							r = master.popRequest();
-							if (r != null){
-								SL.processRequest(r);
+						if (System.currentTimeMillis() - lastProcessTIme > IDLE_THRESHOLD){
+							if (!isShutDown){
+								if (master.removeMidTier(vmID)){
+									System.err.println("Shutting down instance!! vmID = " + vmID);
+									SL.shutDown();
+									isShutDown = true;
+									System.exit(0);
+								}
 							}
 						}
+						r = master.popRequest();
+						if (r != null){
+							SL.processRequest(r);
+							lastProcessTIme = System.currentTimeMillis();
+						}
+
 					}
 				}
 			}
 		}
+	}
+
+	private static boolean tryDrop(Cloud.FrontEndOps.Request r) {
+		if ((requestQueue.size() > DROP_THRESHOLD)
+				&& (!r.isPurchase)){
+			double prob = Math.random();
+			if (prob < DROP_PROB){
+				SL.drop(r);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static boolean adjustVMs(ServerLib SL, String ip, int port) {
@@ -186,18 +210,18 @@ public class Server implements IServer{
 //				}
 
 			}else{
-				if (logArray.size() >= 2){
-					System.err.println("Checking consecutive 1s: " + logArray);
-					if ((logArray.get(logArray.size() - 1) == logArray.get(logArray.size() - 2)) && (logArray.get(logArray.size() - 2) == 1)) {
-						System.err.println("Consecutive ones!");
-						// shutdown mid tier
-						adjusted = true;
-						System.err.println("middleTierMap = " + middleTierMap);
-						while (middleTierMap.size() > MIDLETIER_SHUT_THRESHOLD) {
-							shutDownVM(ip, port, middleTierMap, MIDDLETIER_STRING);
-						}
-					}
-				}
+//				if (logArray.size() >= 2){
+//					System.err.println("Checking consecutive 1s: " + logArray);
+//					if ((logArray.get(logArray.size() - 1) == logArray.get(logArray.size() - 2)) && (logArray.get(logArray.size() - 2) == 1)) {
+//						System.err.println("Consecutive ones!");
+//						// shutdown mid tier
+//						adjusted = true;
+//						System.err.println("middleTierMap = " + middleTierMap);
+//						while (middleTierMap.size() > MIDLETIER_SHUT_THRESHOLD) {
+//							shutDownVM(ip, port, middleTierMap, MIDDLETIER_STRING);
+//						}
+//					}
+//				}
 			}
 
 		}
@@ -352,6 +376,16 @@ public class Server implements IServer{
 			SL.shutDown();
 			isShutDown = true;
 		}
+	}
+
+	// return true if can remove, and remove vmid
+	public boolean removeMidTier(int vmID) throws RemoteException {
+		if (middleTierMap.size() > MIDLETIER_SHUT_THRESHOLD){
+			middleTierMap.remove(vmID);
+			System.err.println("Removed midtier, middletiermap = " + middleTierMap);
+			return true;
+		}
+		return false;
 	}
 
 //	private static int getVMNum(float currentTime){
