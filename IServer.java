@@ -16,5 +16,5 @@ public interface IServer extends Remote{
 
     void shutDown() throws RemoteException;
 
-    boolean removeMidTier(int vmID) throws RemoteException;
+    boolean removeVM(int vmID, int type) throws RemoteException;
 }

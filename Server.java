@@ -14,7 +14,6 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
 
 public class Server implements IServer{
-	private static final String MASTER_STRING = "Master";
 	private static final int FRONT = 1;
 	private static final int MIDDLE = 2;
 	private static final int MASTER = 0;
@@ -22,12 +21,15 @@ public class Server implements IServer{
 	private static final String MIDDLETIER_STRING = "MiddleTier";
 	private static final float LOG_PERIOD_LENGTH = 2000;
 	private static final long ADJUST_COOLDOWN = 0;
-	private static final int FRONTTIER_THRESHOLD = 1;
-	private static final double QUEUELENGTH_MIDDLETIER_RATIO = 2.4;
+	private static final int FRONTTIER_THRESHOLD = 0;
+	private static final double QUEUELENGTH_MIDDLETIER_RATIO = 2.5;
 	private static final int MIDLETIER_SHUT_THRESHOLD = 2;
 	private static final double DROP_PROB = 0.3;
-	private static final int DROP_THRESHOLD = 10;
-	private static final long IDLE_THRESHOLD = 5000;
+	private static final int DROP_THRESHOLD = 5;
+	private static final long IDLE_THRESHOLD = 4000;
+	private static final double QUEUELENGTH_FRONTTIER_RATIO = 5;
+	private static final int SLLENGTH_FRONTTIER_RATIO = 5;
+	private static final int DROP_QUEUE_MID_RATIO = 3;
 	private static int MID_FRONT_RATIO = 6;
 	// a concurrent the map each VM ID to its tier
 	private static ConcurrentMap<Integer, Integer> frontTierMap;
@@ -41,6 +43,7 @@ public class Server implements IServer{
 	private static VMInfo vmInfo; // TODO one per main class?
 	private static long lastAdjustTime;
 	private static long lastProcessTIme;
+	private static Cloud.DatabaseOps myCache;
 	private int vmID;
 	private static boolean isShutDown;
 
@@ -75,12 +78,13 @@ public class Server implements IServer{
 			nextVMID = 4;
 			initTimeStamp = System.currentTimeMillis();
 			lastAdjustTime = initTimeStamp;
+			myCache = new MyCache(SL.getDB(), ip, port);
 
 		}
 		else{
-			System.err.println("in other machine, frontTierMap= " + frontTierMap + " nextVMID = " + nextVMID);
 			if(SL.getStatusVM(1) == Cloud.CloudOps.VMStatus.Running){
-				master = getMasterInstance(ip, port);
+				master = MyLib.getMasterInstance(ip, port);
+				myCache = (Cloud.DatabaseOps) MyLib.getVMInstance(ip, port, MyLib.CACHE_STRING);
 				// we design first VM started by server to be a mid-tier
 				if (vmID == 2){
 					registerMidTier(SL, ip, port, vmID);
@@ -93,13 +97,11 @@ public class Server implements IServer{
 					else{
 						System.err.println("In new Mid tier!");
 						registerMidTier(SL, ip, port, vmID);
-						lastProcessTIme = System.currentTimeMillis();
-
 					}
+					lastProcessTIme = System.currentTimeMillis();
 				}
 
 			}
-
 		}
 
 		// main loop
@@ -114,9 +116,11 @@ public class Server implements IServer{
 						requestQueue.push(r);
 						logPush();
 					}else{
-						SL.processRequest(r);
+						SL.drop(r);
+//						SL.processRequest(r, myCache);
 					}
 					if (adjustVMs(SL, ip, port)){
+						System.err.println("Adjusted VM!");
 						lastAdjustTime = System.currentTimeMillis();
 						System.err.println("FrontTierSize = " + frontTierMap.size());
 						System.err.println("MiddleTierSize = " + middleTierMap.size());
@@ -126,41 +130,54 @@ public class Server implements IServer{
 			}
 			else{
 				if(SL.getStatusVM(1) == Cloud.CloudOps.VMStatus.Running){
+					//fronttier, whileloop
+					tryShutDown(master, vmID, FRONT);
 					if (vmInfo.getType() == FRONT){
 						r = SL.getNextRequest();
-						master.pushRequest(r);
-					}
-					else{
-						if (System.currentTimeMillis() - lastProcessTIme > IDLE_THRESHOLD){
-							if (!isShutDown){
-								if (master.removeMidTier(vmID)){
-									System.err.println("Shutting down instance!! vmID = " + vmID);
-									SL.shutDown();
-									isShutDown = true;
-									System.exit(0);
-								}
-							}
+						lastProcessTIme = System.currentTimeMillis();
+						if (!tryDrop(r)){
+							master.pushRequest(r);
 						}
+					}
+					// midtier, while loo
+					else{
+						tryShutDown(master, vmID, MIDDLE);
 						r = master.popRequest();
 						if (r != null){
-							SL.processRequest(r);
+							SL.processRequest(r, myCache);
 							lastProcessTIme = System.currentTimeMillis();
 						}
-
 					}
 				}
 			}
 		}
 	}
 
-	private static boolean tryDrop(Cloud.FrontEndOps.Request r) {
-		if ((requestQueue.size() > DROP_THRESHOLD)
-				&& (!r.isPurchase)){
-			double prob = Math.random();
-			if (prob < DROP_PROB){
-				SL.drop(r);
-				return true;
+	private static void tryShutDown(IServer master, int vmID, int type) throws RemoteException {
+		if (System.currentTimeMillis() - lastProcessTIme > IDLE_THRESHOLD){
+			if (!isShutDown){
+				if (master.removeVM(vmID, type)){
+					System.err.println("Shutting down instance!! vmID = " + vmID);
+					SL.shutDown();
+					isShutDown = true;
+					System.exit(0);
+				}
 			}
+		}
+	}
+
+	private static boolean tryDrop(Cloud.FrontEndOps.Request r) {
+		if ((SL.getQueueLength() > DROP_THRESHOLD)){
+			return dropWithProb(DROP_PROB, r);
+		}
+		return false;
+	}
+
+	private static boolean dropWithProb(double drop_prob, Cloud.FrontEndOps.Request r) {
+		double prob = Math.random();
+		if (prob < drop_prob){
+			SL.drop(r);
+			return true;
 		}
 		return false;
 	}
@@ -178,7 +195,7 @@ public class Server implements IServer{
 				int previousSize = middleTierMap.size();
 				int targetSize = previousSize + deltaRequest;
 				System.err.println("requestQueue.size() = " + requestQueue.size());
-				int surpressedNum = (int)((double)requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO);
+				int surpressedNum = (int)Math.floor((double)requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO);
 				System.err.println("requestQueue.size() /ratio = " + surpressedNum);
 				if (targetSize > surpressedNum){
 					targetSize =  surpressedNum;
@@ -189,27 +206,27 @@ public class Server implements IServer{
 					adjusted = true;
 					myStartVM(nextVMID, MIDDLE);
 				}
-//				// add front tier, tar
-//				int targetFrontTierSize = (middleTierMap.size() / MID_FRONT_RATIO) - frontTierMap.size();
-//				System.err.println("target frontier size = " + targetFrontTierSize);
-//				System.err.println("fronttiermap.size = " + frontTierMap.size());
-//				if (targetFrontTierSize < FRONTTIER_THRESHOLD){
-//					targetFrontTierSize = FRONTTIER_THRESHOLD;
-//				}
-//				int size = frontTierMap.size();
-//				if (targetFrontTierSize < frontTierMap.size()){
-//					shutDownVM(ip, port, SL, frontTierMap, FRONTTIER_STRING);
-//				}
-//				else{
-//					for (int i = size; i < targetFrontTierSize; i++)
-//					{
-//						int targetID = frontTierMap.size() + middleTierMap.size() + 2;
-//						myStartVM(SL, targetID, FRONT);
-//					}
 //
-//				}
-
-			}else{
+			}
+			//				// add front tier, tar
+			int targetFrontTierSize = (int)Math.floor(SL.getQueueLength()
+					/ SLLENGTH_FRONTTIER_RATIO);
+			int SLQueueLength = SL.getQueueLength();
+			if (SLQueueLength == 0){
+				System.err.println("SL.getQueueLength() is empty ");
+			}
+			else{
+				System.err.println("SL.getQueueLength() = " + SL.getQueueLength());
+			}
+			System.err.println("target frontier size = " + targetFrontTierSize);
+			System.err.println("fronttiermap.size = " + frontTierMap.size());
+			int size = frontTierMap.size();
+			for (int i = size; i < targetFrontTierSize; i++)
+			{
+				adjusted = true;
+				myStartVM(nextVMID, FRONT);
+			}
+			//else{
 //				if (logArray.size() >= 2){
 //					System.err.println("Checking consecutive 1s: " + logArray);
 //					if ((logArray.get(logArray.size() - 1) == logArray.get(logArray.size() - 2)) && (logArray.get(logArray.size() - 2) == 1)) {
@@ -224,40 +241,40 @@ public class Server implements IServer{
 //				}
 			}
 
-		}
+		//}
 
 		return adjusted;
 	}
 
-	private static void shutDownVM(String ip, int port, ConcurrentMap<Integer, Integer> map,
-										String urlString) {
-		System.err.println("In shut down");
-		Integer idShutDown = 0;
-		boolean success = true;
-		for (Integer i : map.keySet()) {
-			String url = String.format("//%s:%d/%s", ip, port, urlString + Integer.toString(i));
-			System.err.println("Closing url = " + url);
-			System.err.println("This macineg is : " + SL.getStatusVM(i));
-			try {
-				idShutDown = i;
-				if (SL.getStatusVM(i) == Cloud.CloudOps.VMStatus.Running){
-					IServer instance = (IServer) Naming.lookup(url);
-					instance.shutDown();
-				}
-			} catch (NotBoundException e) {
-				success = false;
-				e.printStackTrace();
-			} catch (MalformedURLException e) {
-				e.printStackTrace();
-			} catch (RemoteException e) {
-				e.printStackTrace();
-			}
-			break;
-		}
-		if (success){
-			map.remove(idShutDown);
-		}
-	}
+//	private static void shutDownVM(String ip, int port, ConcurrentMap<Integer, Integer> map,
+//										String urlString) {
+//		System.err.println("In shut down");
+//		Integer idShutDown = 0;
+//		boolean success = true;
+//		for (Integer i : map.keySet()) {
+//			String url = String.format("//%s:%d/%s", ip, port, urlString + Integer.toString(i));
+//			System.err.println("Closing url = " + url);
+//			System.err.println("This macineg is : " + SL.getStatusVM(i));
+//			try {
+//				idShutDown = i;
+//				if (SL.getStatusVM(i) == Cloud.CloudOps.VMStatus.Running){
+//					IServer instance = (IServer) Naming.lookup(url);
+//					instance.shutDown();
+//				}
+//			} catch (NotBoundException e) {
+//				success = false;
+//				e.printStackTrace();
+//			} catch (MalformedURLException e) {
+//				e.printStackTrace();
+//			} catch (RemoteException e) {
+//				e.printStackTrace();
+//			}
+//			break;
+//		}
+//		if (success){
+//			map.remove(idShutDown);
+//		}
+//	}
 
 	private static void myStartVM(int vmID, int type) {
 		if (type == FRONT){
@@ -278,7 +295,7 @@ public class Server implements IServer{
 	private static void registerMaster(ServerLib SL, String ip, int port, int vmID) {
 		SL.register_frontend();
 		vmInfo = new VMInfo(MASTER, SL, new Date(), vmID);
-		String url = String.format("//%s:%d/%s", ip, port, MASTER_STRING);
+		String url = String.format("//%s:%d/%s", ip, port, MyLib.MASTER_STRING);
 		System.err.println("Binding master with url = " + url);
 		bind(url);
 	}
@@ -379,14 +396,25 @@ public class Server implements IServer{
 	}
 
 	// return true if can remove, and remove vmid
-	public boolean removeMidTier(int vmID) throws RemoteException {
-		if (middleTierMap.size() > MIDLETIER_SHUT_THRESHOLD){
-			middleTierMap.remove(vmID);
-			System.err.println("Removed midtier, middletiermap = " + middleTierMap);
+	public boolean removeVM(int vmID, int type) throws RemoteException {
+		ConcurrentMap<Integer, Integer> map;
+		int threshold;
+		if (type == FRONT){
+			map = frontTierMap;
+			threshold = FRONTTIER_THRESHOLD;
+		}
+		else{
+			map = middleTierMap;
+			threshold = MIDLETIER_SHUT_THRESHOLD;
+		}
+		if (map.size() > threshold){
+			map.remove(vmID);
+			System.err.println("Removed  " + type +  " middletiermap = " + map);
 			return true;
 		}
 		return false;
 	}
+
 
 //	private static int getVMNum(float currentTime){
 //		int VMNum;
@@ -407,27 +435,8 @@ public class Server implements IServer{
 //		return VMNum;
 //	}
 
-	public static IServer getMasterInstance(String ip, int port) {
-		return getVMInstance(ip, port, MASTER_STRING);
-	}
 
 
-	public static IServer getVMInstance(String ip, int port, String name) {
-		String url = String.format("//%s:%d/%s", ip, port, name);
-		try {
-			System.err.println("Looking up url = " + url);
-			IServer instance = (IServer)Naming.lookup(url);
-			return instance;
-		} catch (NotBoundException e) {
-			e.printStackTrace();
-		} catch (MalformedURLException e) {
-			e.printStackTrace();
-		} catch (RemoteException e) {
-			e.printStackTrace();
-		}
-		System.exit(1);
-		return null;
-	}
 
 
 }
