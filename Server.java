@@ -29,7 +29,8 @@ public class Server implements IServer{
 	private static final long IDLE_THRESHOLD = 4000;
 	private static final double QUEUELENGTH_FRONTTIER_RATIO = 5;
 	private static final int SLLENGTH_FRONTTIER_RATIO = 5;
-	private static final int DROP_QUEUE_MID_RATIO = 3;
+	private static final int MIDTIER_UPPERBOUND = 9;
+	private static final int FRONTTIER_UPPERBOUND = 2;
 	private static int MID_FRONT_RATIO = 6;
 	// a concurrent the map each VM ID to its tier
 	private static ConcurrentMap<Integer, Integer> frontTierMap;
@@ -183,7 +184,7 @@ public class Server implements IServer{
 	}
 
 	private static boolean adjustVMs(ServerLib SL, String ip, int port) {
-		System.err.println("in adjustVm, logArray = " + logArray);
+		System.err.println("in 22, logArray = " + logArray);
 //		if (logArray.size() < 2){
 //			return false;
 //		}
@@ -197,9 +198,7 @@ public class Server implements IServer{
 				System.err.println("requestQueue.size() = " + requestQueue.size());
 				int surpressedNum = (int)Math.floor((double)requestQueue.size() / QUEUELENGTH_MIDDLETIER_RATIO);
 				System.err.println("requestQueue.size() /ratio = " + surpressedNum);
-				if (targetSize > surpressedNum){
-					targetSize =  surpressedNum;
-				}
+				targetSize = Math.min(Math.min(surpressedNum, targetSize), MIDTIER_UPPERBOUND);
 				System.err.println("previousSize, targetSize = " + previousSize + " , " + targetSize);
 				for (int i = previousSize; i < targetSize; i++)
 				{
@@ -209,8 +208,8 @@ public class Server implements IServer{
 //
 			}
 			//				// add front tier, tar
-			int targetFrontTierSize = (int)Math.floor(SL.getQueueLength()
-					/ SLLENGTH_FRONTTIER_RATIO);
+			int targetFrontTierSize = Math.min((int)Math.floor(SL.getQueueLength()
+					/ SLLENGTH_FRONTTIER_RATIO), FRONTTIER_UPPERBOUND);
 			int SLQueueLength = SL.getQueueLength();
 			if (SLQueueLength == 0){
 				System.err.println("SL.getQueueLength() is empty ");
@@ -239,7 +238,7 @@ public class Server implements IServer{
 //						}
 //					}
 //				}
-			}
+		}
 
 		//}
 
@@ -435,8 +434,5 @@ public class Server implements IServer{
 //		return VMNum;
 //	}
 
-
-
-
-
+	
 }
