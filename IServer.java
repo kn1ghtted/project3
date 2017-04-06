@@ -17,4 +17,6 @@ public interface IServer extends Remote{
     void shutDown() throws RemoteException;
 
     boolean removeVM(int vmID, int type) throws RemoteException;
+
+    long getInitTime() throws RemoteException; // TODO just for debug
 }

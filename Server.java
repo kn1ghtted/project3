@@ -27,10 +27,12 @@ public class Server implements IServer{
 	private static final double DROP_PROB = 0.3;
 	private static final int DROP_THRESHOLD = 5;
 	private static final long IDLE_THRESHOLD = 4000;
-	private static final double QUEUELENGTH_FRONTTIER_RATIO = 5;
 	private static final int SLLENGTH_FRONTTIER_RATIO = 5;
-	private static final int MIDTIER_UPPERBOUND = 9;
+	private static final int MIDTIER_UPPERBOUND = 10;
 	private static final int FRONTTIER_UPPERBOUND = 2;
+	private static final long SAMPLING_PERIOD = 3;
+	// ratio between initial sampling arrival rate and midttiers started after sampling
+	private static final double ARRIVAL_RATE_MIDTIER_RATIO = 2;
 	private static int MID_FRONT_RATIO = 6;
 	// a concurrent the map each VM ID to its tier
 	private static ConcurrentMap<Integer, Integer> frontTierMap;
@@ -45,6 +47,12 @@ public class Server implements IServer{
 	private static long lastAdjustTime;
 	private static long lastProcessTIme;
 	private static Cloud.DatabaseOps myCache;
+	private static long slaveInitTime; // TODO just for debug
+	private static long masterInitTime; // TODO just for debug
+	private static boolean samplingEnded; // used by master to indicate if
+	private static int clientCnt;
+	// the initial sampling period has ended
+
 	private int vmID;
 	private static boolean isShutDown;
 
@@ -62,7 +70,6 @@ public class Server implements IServer{
 		ServerLib SL = new ServerLib(ip, port);
 		int vmID = Integer.parseInt(args[2]);
 		IServer master = null;
-		System.err.println("VM started, ip = " + ip + " port = " + port + " vmID = " + vmID);
 		if (vmID == 1){
 //			int VMNum = getVMNum(currentTime);
 //			for (int i = 0; i < VMNum; i ++){
@@ -80,6 +87,7 @@ public class Server implements IServer{
 			initTimeStamp = System.currentTimeMillis();
 			lastAdjustTime = initTimeStamp;
 			myCache = new MyCache(SL.getDB(), ip, port);
+			clientCnt = 0;
 
 		}
 		else{
@@ -99,8 +107,12 @@ public class Server implements IServer{
 						System.err.println("In new Mid tier!");
 						registerMidTier(SL, ip, port, vmID);
 					}
-					lastProcessTIme = System.currentTimeMillis();
 				}
+				masterInitTime = master.getInitTime();
+				slaveInitTime = System.currentTimeMillis();
+				lastProcessTIme = slaveInitTime;
+				System.err.println("VM " + vmID + " started, time = " + (slaveInitTime - masterInitTime)/1000);
+
 
 			}
 		}
@@ -110,6 +122,9 @@ public class Server implements IServer{
 			Cloud.FrontEndOps.Request r;
 			if (vmInfo.getType() == MASTER){
 				r = SL.getNextRequest();
+				if (!samplingEnded){
+					initialSampling();
+				}
 				if (!tryDrop(r)){
 					if ((SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Running) ||
 							(System.currentTimeMillis() - initTimeStamp >= 6000)){
@@ -134,6 +149,13 @@ public class Server implements IServer{
 					//fronttier, whileloop
 					tryShutDown(master, vmID, FRONT);
 					if (vmInfo.getType() == FRONT){
+						int SLQueueLength = SL.getQueueLength();
+						if (SLQueueLength == 0){
+							System.err.println("SL.getQueueLength() is empty ");
+						}
+						else{
+							System.err.println("SL.getQueueLength() = " + SL.getQueueLength());
+						}
 						r = SL.getNextRequest();
 						lastProcessTIme = System.currentTimeMillis();
 						if (!tryDrop(r)){
@@ -154,6 +176,24 @@ public class Server implements IServer{
 		}
 	}
 
+	// sample first couple of seconds, and use that to decide how many more VMs to start at time = 5
+	private static void initialSampling() {
+		clientCnt += 1;
+		long time = System.currentTimeMillis();
+		if ((time - initTimeStamp) >= SAMPLING_PERIOD){
+			samplingEnded = true;
+			double actualSamplingTime = (double)(time - initTimeStamp) / 1000;
+			double arrivalRate = (double)clientCnt/actualSamplingTime;
+			int targetMidTiers = (int)Math.floor(arrivalRate / ARRIVAL_RATE_MIDTIER_RATIO);
+			System.err.println("Sampling ended! arrival rate = " + arrivalRate + ", targetMidtiers = " + targetMidTiers);
+			int size = middleTierMap.size();
+			for (int i = size; i < Math.min(targetMidTiers, MIDTIER_UPPERBOUND); i++){
+				myStartVM(nextVMID, MIDDLE);
+			}
+		}
+
+	}
+
 	private static void tryShutDown(IServer master, int vmID, int type) throws RemoteException {
 		if (System.currentTimeMillis() - lastProcessTIme > IDLE_THRESHOLD){
 			if (!isShutDown){
@@ -161,6 +201,9 @@ public class Server implements IServer{
 					System.err.println("Shutting down instance!! vmID = " + vmID);
 					SL.shutDown();
 					isShutDown = true;
+					long time = System.currentTimeMillis();
+					System.err.println("VM " + vmID + " ended at " + (time - masterInitTime)/1000 + " started at "
+							+ (slaveInitTime - masterInitTime)/1000);
 					System.exit(0);
 				}
 			}
@@ -184,7 +227,6 @@ public class Server implements IServer{
 	}
 
 	private static boolean adjustVMs(ServerLib SL, String ip, int port) {
-		System.err.println("in 22, logArray = " + logArray);
 //		if (logArray.size() < 2){
 //			return false;
 //		}
@@ -414,6 +456,10 @@ public class Server implements IServer{
 		return false;
 	}
 
+	public long getInitTime() throws RemoteException {
+		return initTimeStamp;
+	}
+
 
 //	private static int getVMNum(float currentTime){
 //		int VMNum;
@@ -434,5 +480,5 @@ public class Server implements IServer{
 //		return VMNum;
 //	}
 
-	
+
 }
