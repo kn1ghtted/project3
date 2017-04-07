@@ -1,8 +1,5 @@
-import org.omg.PortableServer.SERVANT_RETENTION_POLICY_ID;
 
-import java.io.Serializable;
 import java.net.MalformedURLException;
-import java.net.PasswordAuthentication;
 import java.rmi.*;
 import java.rmi.server.UnicastRemoteObject;
 import java.util.ArrayList;
@@ -12,6 +9,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
 
+
+/**
+ * A server class that implements the mid, front, master of a scalable
+ * online shopping system.
+ */
 public class Server implements IServer{
     private static final int FRONT = 1;
     private static final int MIDDLE = 2;
@@ -31,52 +33,45 @@ public class Server implements IServer{
     private static final int MIDTIER_UPPERBOUND = 9;
     private static final int FRONTTIER_UPPERBOUND = 2;
     private static final long SAMPLING_PERIOD = 3000;
-    // ratio between initial sampling arrival rate and midttiers started after sampling
+    // ratio between initial sampling arrival rate and midttiers
+    // started after sampling
     private static final double ARRIVAL_RATE_MIDTIER_RATIO = 0.8;
-    private static int MID_FRONT_RATIO = 6;
     // a concurrent the map each VM ID to its tier
     private static ConcurrentMap<Integer, Integer> frontTierMap;
     private static ConcurrentMap<Integer, Integer> middleTierMap;
-    public static ConcurrentLinkedDeque<Cloud.FrontEndOps.Request> requestQueue;
+    public static ConcurrentLinkedDeque<Cloud.FrontEndOps.Request>
+            requestQueue;
     private static List<Integer> logArray;
     private static long initTimeStamp;
     private static int nextVMID;
-
     private static ServerLib SL;
-    private static VMInfo vmInfo; // TODO one per main class?
+    private static VMInfo vmInfo; //
     private static long lastAdjustTime;
     private static long lastProcessTIme;
     private static Cloud.DatabaseOps myCache;
-    private static long slaveInitTime; // TODO just for debug
-    private static long masterInitTime; // TODO just for debug
+    private static long slaveInitTime;
+    private static long masterInitTime;
     private static boolean samplingEnded; // used by master to indicate if
     private static int clientCnt;
-    private static long largestGap;
-    private static boolean processed; // field of middle tier, to indicate there's a last processed request
-    // the initial sampling period has ended
-
     private int vmID;
     private static boolean isShutDown;
 
     public Server(ServerLib SL, int vmID) {
         this.vmID = vmID;
-        this.SL = SL; // static or non static? if initialize Server within main, does this
+        this.SL = SL;
         isShutDown = false;
     }
 
 
     public static void main ( String args[] ) throws Exception {
-        if (args.length != 3) throw new Exception("Need 3 args: <cloud_ip> <cloud_port> <VM id>");
+        if (args.length != 3) throw new Exception(
+                "Need 3 args: <cloud_ip> <cloud_port> <VM id>");
         String ip = args[0];
         int port = Integer.parseInt(args[1]);
         ServerLib SL = new ServerLib(ip, port);
         int vmID = Integer.parseInt(args[2]);
         IServer master = null;
         if (vmID == 1){
-//      int VMNum = getVMNum(currentTime);
-//      for (int i = 0; i < VMNum; i ++){
-//        SL.startVM();
-//      }
             requestQueue = new ConcurrentLinkedDeque<>();
             frontTierMap = new ConcurrentHashMap<>();
             middleTierMap = new ConcurrentHashMap<>();
@@ -96,7 +91,7 @@ public class Server implements IServer{
         else{
             if(SL.getStatusVM(1) == Cloud.CloudOps.VMStatus.Running){
                 master = MyLib.getMasterInstance(ip, port);
-                myCache = (Cloud.DatabaseOps) MyLib.getVMInstance(ip, port, MyLib.CACHE_STRING);
+                myCache = MyLib.getVMInstance(ip, port, MyLib.CACHE_STRING);
                 // we design first VM started by server to be a mid-tier
                 if (vmID == 2){
                     registerMidTier(SL, ip, port, vmID);
@@ -107,7 +102,6 @@ public class Server implements IServer{
                         registerFrontTier(SL, ip, port, vmID);
                     }
                     else{
-                        processed = false;
                         System.err.println("In new Mid tier!");
                         registerMidTier(SL, ip, port, vmID);
                     }
@@ -115,8 +109,6 @@ public class Server implements IServer{
                 masterInitTime = master.getInitTime();
                 slaveInitTime = System.currentTimeMillis();
                 lastProcessTIme = slaveInitTime;
-                largestGap = 0;
-                System.err.println("VM " + vmID + " started, time = " + (slaveInitTime - masterInitTime)/1000);
 
 
             }
@@ -131,20 +123,18 @@ public class Server implements IServer{
                     initialSampling();
                 }
                 if (!tryDrop(r)){
-                    if ((SL.getStatusVM(2) == Cloud.CloudOps.VMStatus.Running) ||
-                            (System.currentTimeMillis() - initTimeStamp >= 5000)){
+                    if ((SL.getStatusVM(2) ==
+                            Cloud.CloudOps.VMStatus.Running) ||
+                            (System.currentTimeMillis() - initTimeStamp
+                                    >= 5000)){
                         // >= 6000 to prevent the shut down of vm 2
                         requestQueue.push(r);
                         logPush();
                     }else{
                         SL.drop(r);
-//            SL.processRequest(r, myCache);
                     }
                     if (adjustVMs(SL, ip, port)){
-                        System.err.println("Adjusted VM!");
                         lastAdjustTime = System.currentTimeMillis();
-                        System.err.println("FrontTierSize = " + frontTierMap.size());
-                        System.err.println("MiddleTierSize = " + middleTierMap.size());
                     }
                     updateLogArray(getLogPeriod());
                 }
@@ -173,10 +163,6 @@ public class Server implements IServer{
                         if (r != null){
                             long time = System.currentTimeMillis();
                             long gap = time - lastProcessTIme;
-                            if (gap >= largestGap) {
-                                System.err.println("largest gap = " + largestGap);
-                                largestGap = gap;
-                            }
                             lastProcessTIme = time;
                             SL.processRequest(r, myCache);
                         }
@@ -481,26 +467,6 @@ public class Server implements IServer{
     public long getInitTime() throws RemoteException {
         return initTimeStamp;
     }
-
-
-//  private static int getVMNum(float currentTime){
-//    int VMNum;
-//    if ((currentTime >= 0) && (currentTime <= 7)){
-//      VMNum = 1;
-//    }else if(currentTime <= 12){
-//      VMNum = 2;
-//    }else if (currentTime < 14){
-//      VMNum = 3;
-//    }else if (currentTime <= 18){
-//      VMNum = 2;
-//    }else if (currentTime <= 22){
-//      VMNum = 3;
-//    }
-//    else{
-//      VMNum = 1;
-//    }
-//    return VMNum;
-//  }
 
 
 }
